@@ -1,0 +1,539 @@
+---
+title: "Integration of Pb and Pf data"
+author: "Virginia Howick"
+date: "02/07/2020"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r, message=FALSE}
+setwd("/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf")
+library(scater, quietly = TRUE)
+library(scmap)
+library(Seurat)
+library(scater)
+library(scran)
+library(cowplot)
+library(gridExtra)
+library(viridis)
+```
+
+```{r, tidy=TRUE}
+sce <- readRDS("/Users/vh3/Documents/PfMCA/ANALYSIS_2/scmap/pborthindex_matchedstages_20200629.rds")
+
+pfmca_orth <- readRDS("/Users/vh3/Documents/PfMCA/ANALYSIS_2/scmap/pfmca_orth_20200629.rds")
+
+newot <- read.csv("/Users/vh3/Documents/MCA/ANALYSIS_3/ortho4.csv")
+
+on <- newot$orth_name
+newot$orth_seurat <- gsub("_", "-", on)
+
+
+pbsce <- sce[rownames(sce) %in% rownames(pfmca_orth), ]
+table(rownames(pfmca_orth)==rownames(pbsce))
+
+pbsce <- pbsce[match(rownames(pfmca_orth), rownames(pbsce)), ]
+table(rownames(pfmca_orth)==rownames(pbsce))
+
+pbcounts <- as.data.frame(counts(pbsce))
+pfcounts <- as.data.frame(counts(pfmca_orth))
+
+allcounts <- cbind(pbcounts, pfcounts)
+
+pbcd <- as.data.frame(colData(pbsce))
+pbcd <- pbcd[c("sample_id", "Species", "ShortenedLifeStage2", "seqrunnum", "time")]
+colnames(pbcd) <- c("sample_id", "species", "stage", "run", "day")
+pbcd$xfilename <- pbcd$sample_id
+pbcd$topcell <- pbcd$sample_id
+pbcd$topcell_sls2 <- pbcd$stage
+pbcd$topsim <- rep(1, length(pbcd$sample_id))
+
+
+pfcd <- as.data.frame(colData(pfmca_orth))
+pfcd <- pfcd[c("sample_id", "stage", "day", "run", "xfilename", "topcell", "topcell_sls2", "topsim")]
+pfcd$species <- rep("Pfa", length(pfcd$sample_id))
+
+pbcd <- pbcd[, match(colnames(pfcd), colnames(pbcd))]
+
+allcd <- rbind(pbcd, pfcd)
+
+table(rownames(allcd)==colnames(allcounts))
+
+mca <- SingleCellExperiment(assays = list(
+  counts = as.matrix(allcounts)
+), colData = allcd)
+
+#saveRDS(mca, "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/allpbpf_20200630.rds")
+```
+
+
+```{r, tidy=TRUE}
+pfint <- SingleCellExperiment(assays = list(
+  counts = as.matrix(pfcounts)
+), colData = pfcd)
+
+set.seed(222)
+clusters <- quickCluster(pfint)
+pfint <- computeSumFactors(pfint, clusters=clusters, min.mean=10)
+pfint <- logNormCounts(pfint, log=FALSE, size_factors=sizeFactors(pfint))
+pfint <- logNormCounts(pfint, log=TRUE, size_factors=sizeFactors(pfint))
+
+
+#saveRDS(pfint, file="/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/pf_forint_20200630.rds")
+
+pfint.seurat <- as.Seurat(pfint, counts = "counts", data = "logcounts")
+Idents(pfint.seurat) <- "stage"
+pfint.seurat <- FindVariableFeatures(pfint.seurat, selection.method = "vst", nfeatures = 500)
+
+
+pbint <- SingleCellExperiment(assays = list(
+  counts = as.matrix(pbcounts)
+), colData = pbcd)
+
+
+pbint$species <- rep("Pbe", length(pbint$sample_id))
+
+set.seed(222)
+clusters <- quickCluster(pbint)
+pbint <- computeSumFactors(pbint, clusters=clusters, min.mean=10)
+pbint <- logNormCounts(pbint, log=FALSE, size_factors=sizeFactors(pbint))
+pbint <- logNormCounts(pbint, log=TRUE, size_factors=sizeFactors(pbint))
+
+pbint.seurat <- as.Seurat(pbint, counts = "counts", data = "logcounts")
+Idents(pbint.seurat) <- "stage"
+pbint.seurat <- FindVariableFeatures(pbint.seurat, selection.method = "vst", nfeatures = 500)
+
+#saveRDS(pbint, "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/pb_forint_2020630.rds")
+```
+
+##Perform integration
+We then identify anchors using the FindIntegrationAnchors function, which takes a list of Seurat objects as input, and use these anchors to integrate the two datasets together with IntegrateData.
+```{r, tidy=TRUE}
+p.anchors <- FindIntegrationAnchors(object.list = list(pfint.seurat, pbint.seurat), dims = 1:20)
+p.combined <- IntegrateData(anchorset = p.anchors, dims = 1:20)
+```
+
+##Perform an integrated analysis
+Now we can run a single integrated analysis on all cells!
+```{r, tidy=TRUE}
+DefaultAssay(p.combined) <- "integrated"
+
+# Run the standard workflow for visualization and clustering
+p.combined <- ScaleData(p.combined, verbose = FALSE)
+p.combined <- RunPCA(p.combined, npcs = 30, verbose = FALSE)
+# t-SNE and Clustering
+#p.combined <- FindVariableFeatures(p.combined, selection.method = "vst", nfeatures = 500)
+#hvg <- HVFInfo(object = p.combined)
+#hvgfeat <- rownames(hvg)
+p.combined <- RunUMAP(p.combined,  reduction = "pca", dims = 1:20, umap.method = "uwot", n.neighbors = 5, min.dist = 2, spread = 3, seed.use=222)
+p <- DimPlot(p.combined, reduction = "umap", group.by = "species")
+pdat <- p$data
+
+colors = c(Pfa = "#3399FF", Pbe = "#FF9933")
+
+ggplot(pdat, aes(UMAP_1, UMAP_2)) + geom_point(aes(colour = species), size=0.8) + theme_bw() + 
+    scale_colour_manual(values = colors) +
+  theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+
+ggplot(pdat, aes(UMAP_1, UMAP_2)) + geom_point(aes(colour = species), size=2) + theme_bw() + 
+    scale_colour_manual(values = colors) +
+  theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10))
+
+DimPlot(p.combined, reduction = "umap", group.by = "stage")
+
+
+p.combined <- RunTSNE(p.combined, reduction = "pca", dims = 1:20)
+DimPlot(p.combined, reduction = "tsne", group.by = "stage")
+
+p.combined <- FindNeighbors(p.combined, reduction = "pca", dims = 1:20)
+p.combined <- FindClusters(p.combined, resolution = 0.5)
+
+
+
+p1 <- DimPlot(p.combined, reduction = "umap", group.by = "species")
+p2 <- DimPlot(p.combined, reduction = "umap", label = TRUE)
+plot_grid(p1, p2)
+
+p1 <- DimPlot(p.combined, reduction = "umap", group.by = "species")
+p2 <- DimPlot(p.combined, reduction = "umap", group.by = "stage")
+plot_grid(p1, p2)
+
+sex <- read.csv("/Users/vh3/Documents/PfMCA/ANALYSIS_2/20200522_PfGams_SC3_colData.csv", header=TRUE, row.names = 1)
+
+md <- p.combined@meta.data
+stage2 <- md["stage"]
+stage2$xfilename <- rownames(stage2)
+
+female <- rownames(subset(sex, sex=="female"))
+male <- rownames(subset(sex, sex=="male"))
+weird <- rownames(subset(sex, sex=="weird"))
+
+stage2[which(stage2$xfilename %in% female), ]$stage <- "Female" 
+stage2[which(stage2$xfilename %in% male), ]$stage <- "Male" 
+stage2[which(stage2$xfilename %in% weird), ]$stage <- "early_gam"
+
+p.combined$stage2 <- stage2$stage
+p <- DimPlot(p.combined, reduction = "umap", group.by = "stage2")
+pstage <- p$data
+pstage$species <- pdat$species
+
+colors = c(Male = "#FF6600", Female="#FF9900", early_gam = "#660000", ook = "gold", ooSpz = "seagreen", hlSpz = "turquoise3", 
+    sgSpz = "#00CCFF", bbSpz = "#6633FF", fbSpz = "#CC00CC")
+
+ggplot(pstage, aes(UMAP_1, UMAP_2)) + geom_point(aes(colour = stage2, shape=species), size=0.8) + theme_bw() + 
+    scale_colour_manual(values = colors, breaks = c("early_gam","Female","Male", "ook", "ooSpz", 
+        "hlSpz", "sgSpz", "bbSpz", "fbSpz"), labels = c("early gam", "female gam", "male gam", "ook", "ooSpz", 
+        "hlSpz", "sgSpz", "injSpz", "actSpz")) + theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+
+ggplot(pstage, aes(UMAP_1, UMAP_2)) + geom_point(aes(colour = stage2, shape=species), size=2) + theme_bw() + 
+    scale_colour_manual(values = colors, breaks = c("early_gam","Female","Male", "ook", "ooSpz", 
+        "hlSpz", "sgSpz", "bbSpz", "fbSpz"), labels = c("early gam", "female gam", "male gam", "ook", "ooSpz", 
+        "hlSpz", "sgSpz", "injSpz", "actSpz")) + theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10)) + labs(colour="stage")
+
+
+
+
+p1 <- DimPlot(p.combined, reduction = "umap", group.by = "species")
+p2 <- DimPlot(p.combined, reduction = "umap", label = TRUE)
+plot_grid(p1, p2)
+
+DimPlot(p.combined, reduction = "umap", split.by = "species")
+p <- DimPlot(p.combined, reduction = "umap", label = TRUE, group.by = "seurat_clusters")
+
+pclust <- p$data
+
+ggplot(pclust, aes(UMAP_1, UMAP_2)) + geom_point(aes(colour = seurat_clusters), size=0.8) + theme_bw() + 
+    theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+
+ggplot(pclust, aes(UMAP_1, UMAP_2)) + geom_point(aes(colour = seurat_clusters), size=2) + theme_bw() + 
+    theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10)) + labs(colour="cluster")
+
+
+table(p.combined@meta.data$species, p.combined@meta.data$seurat_clusters)
+```
+
+##Identify conserved cell type markers
+To identify canonical cell type marker genes that are conserved across conditions, we provide the FindConservedMarkers function. This function performs differential gene expression testing for each dataset/group and combines the p-values using meta-analysis methods from the MetaDE R package.
+
+```{r, tidy=TRUE}
+DefaultAssay(p.combined) <- "RNA"
+Idents(p.combined) <- "seurat_clusters"
+
+spz.markers <- FindConservedMarkers(p.combined, ident.1 = 0, grouping.var = "species", verbose = FALSE, logfc.threshold = 0.25, only.pos=TRUE)
+head(spz.markers)
+
+FeaturePlot(p.combined, features = c("ORTH-612", "ORTH-300", "ORTH-3513", "ORTH-1259"), min.cutoff = "q9", reduction = "umap")
+
+female.markers <- FindConservedMarkers(p.combined, ident.1 = 3, grouping.var = "species", verbose = FALSE, logfc.threshold = 0.25, only.pos=TRUE)
+head(female.markers)
+
+FeaturePlot(p.combined, features = c("ORTH-3461", "ORTH-1699", "ORTH-2903"), min.cutoff = "q9", reduction = "umap")
+
+ook.markers <- FindConservedMarkers(p.combined, ident.1 = 2, grouping.var = "species", verbose = FALSE, logfc.threshold = 0.25, only.pos=TRUE)
+head(ook.markers)
+FeaturePlot(p.combined, features = c("ORTH-1886", "ORTH-3864", "ORTH-3594", "ORTH-3352"), min.cutoff = "q9", reduction = "umap")
+
+male.markers <- FindConservedMarkers(p.combined, ident.1 = 4, grouping.var = "species", verbose = FALSE, logfc.threshold = 0.25, only.pos=TRUE)
+head(male.markers)
+p <- FeaturePlot(p.combined, features = c("ORTH-1074", "ORTH-3921", "ORTH-2900", "ORTH-1862"), min.cutoff = "q9", reduction = "umap")
+
+s <- FeaturePlot(p.combined, features = c("ORTH-612"), min.cutoff = "q9", reduction = "umap")
+sdat <- s$data
+ps <- ggplot(sdat, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes_string(colour = "ORTH.612"), size=0.5) + 
+  labs(title="ORTH-612", x=element_blank(), y=element_blank()) +
+  scale_colour_viridis(option = "C") +
+  theme_classic() + 
+  theme(axis.title=element_text(size=8), legend.text = element_text(size = 8), legend.title = element_blank(), axis.text = element_text(size=8), axis.text.x = element_blank(), axis.text.y = element_blank(), plot.title = element_text(hjust = 0.5))
+
+f <- FeaturePlot(p.combined, features = c("ORTH-3461"), min.cutoff = "q9", reduction = "umap")
+fdat <- f$data
+pf <- ggplot(fdat, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes_string(colour = "ORTH.3461"), size=0.5) + 
+  labs(title="ORTH-3461", x=element_blank(), y=element_blank()) +
+  scale_colour_viridis(option = "C") +
+  theme_classic() + 
+  theme(axis.title=element_text(size=8), legend.text = element_text(size = 8), legend.title = element_blank(), axis.text = element_text(size=8), axis.text.x = element_blank(), axis.text.y = element_blank(), plot.title = element_text(hjust = 0.5))
+
+o <- FeaturePlot(p.combined, features = c("ORTH-1886"), min.cutoff = "q9", reduction = "umap")
+odat <- o$data
+po <- ggplot(odat, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes_string(colour = "ORTH.1886"), size=0.5) + 
+  labs(title="ORTH-1886", x=element_blank(), y=element_blank()) +
+  scale_colour_viridis(option = "C") +
+  theme_classic() + 
+  theme(axis.title=element_text(size=8), legend.text = element_text(size = 8), legend.title = element_blank(), axis.text = element_text(size=8), axis.text.x = element_blank(), axis.text.y = element_blank(), plot.title = element_text(hjust = 0.5))
+
+m <- FeaturePlot(p.combined, features = c("ORTH-1074"), min.cutoff = "q9", reduction = "umap")
+mdat <- m$data
+pm <- ggplot(mdat, aes(UMAP_1, UMAP_2)) + 
+  geom_point(aes_string(colour = "ORTH.1074"), size=0.5) + 
+  labs(title="ORTH-1074", x=element_blank(), y=element_blank()) +
+  scale_colour_viridis(option = "C") +
+  theme_classic() + 
+  theme(axis.title=element_text(size=8), legend.text = element_text(size = 8), legend.title = element_blank(), axis.text = element_text(size=8), axis.text.x = element_blank(), axis.text.y = element_blank(), plot.title = element_text(hjust = 0.5))
+
+
+
+grid.arrange(pm, pf, po, ps, nrow=2, ncol=2)
+
+
+```
+
+##Identify differential expressed genes across conditions
+Now that we’ve aligned the stimulated and control cells, we can start to do comparative analyses and look at the differences induced by stimulation. One way to look broadly at these changes is to plot the average expression of both the stimulated and control cells and look for genes that are visual outliers on a scatter plot. 
+
+```{r, tidy=TRUE}
+spz.cells <- subset(p.combined, idents = "1")
+Idents(spz.cells) <- "species"
+avg.spz.cells <- log1p(AverageExpression(spz.cells, verbose = FALSE)$RNA)
+avg.spz.cells$gene <- rownames(avg.spz.cells)
+
+ggplot(avg.spz.cells, aes(Pbe, Pfa)) + geom_point() + ggtitle("Clust 1 Spz")
+```
+
+Because we are confident in having identified common cell types across condition, we can ask what genes change in different conditions for cells of the same type. First, we create a column in the meta.data slot to hold both the cell type and stimulation information and switch the current ident to that column. Then we use FindMarkers to find the genes that are different between stimulated and control B cells. 
+
+```{r, tidy=TRUE}
+p.combined$clust_species <- paste(Idents(p.combined), p.combined$species, sep = "_")
+p.combined$celltype <- Idents(p.combined)
+Idents(p.combined) <- "clust_species"
+species.spec <- FindMarkers(p.combined, ident.1 = "1_Pfa", ident.2 = "1_Pbe", verbose = FALSE)
+
+species.spec$pbgene <- newot[match(rownames(species.spec), newot[, 12]), 2]
+species.spec$pfgene <- newot[match(rownames(species.spec), newot[, 12]), 4]
+
+head(species.spec, n = 15)
+
+spz.markers$pbgene <- newot[match(rownames(spz.markers), newot[, 12]), 2]
+spz.markers$pfgene <- newot[match(rownames(spz.markers), newot[, 12]), 4]
+
+subss <- species.spec[species.spec$p_val_adj < 0.001, ]
+subss2 <- subss[subss$avg_logFC > 2, ]
+
+#write.csv(spz.markers, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/spz1_markers.csv")
+#write.csv(subss, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/spz1_species_specific.csv")
+#write.csv(subss2, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/spz1_pf_specific.csv")
+```
+
+
+```{r, tidy=TRUE}
+avg.spz.cells$species.spec <- rep("FALSE", length(avg.spz.cells$Pfa))
+avg.spz.cells[which(rownames(avg.spz.cells) %in% rownames(subss)), ]$species.spec <- "TRUE"
+
+ggplot(avg.spz.cells, aes(x=Pbe, y=Pfa)) + geom_point(aes(colour=species.spec)) + theme_bw()
+
+avg.spz.cells$species.spec <- rep("FALSE", length(avg.spz.cells$Pfa))
+avg.spz.cells[which(rownames(avg.spz.cells) %in% rownames(subss2)), ]$species.spec <- "TRUE"
+
+ggplot(avg.spz.cells, aes(x=Pbe, y=Pfa)) + geom_point(aes(colour=species.spec)) + theme_bw()
+
+plot(species.spec$avg_logFC, species.spec$pct.2)
+plot(species.spec$avg_logFC, species.spec$pct.1)
+
+p <- ggplot(species.spec, aes(x=pct.1, y=pct.2)) + geom_point(aes(colour=avg_logFC))
+```
+
+
+Try the same with females
+```{r, tidy=TRUE}
+Idents(p.combined) <- "celltype"
+f.cells <- subset(p.combined, idents = "3")
+Idents(f.cells) <- "species"
+avg.f.cells <- log1p(AverageExpression(f.cells, verbose = FALSE)$RNA)
+avg.f.cells$gene <- rownames(avg.f.cells)
+
+ggplot(avg.f.cells, aes(Pbe, Pfa)) + geom_point() + ggtitle("Clust 3 female")
+```
+
+
+```{r, tidy=TRUE}
+
+Idents(p.combined) <- "clust_species"
+species.spec <- FindMarkers(p.combined, ident.1 = "3_Pfa", ident.2 = "3_Pbe", verbose = FALSE)
+head(species.spec, n = 15)
+
+species.spec$pbgene <- newot[match(rownames(species.spec), newot[, 12]), 2]
+species.spec$pfgene <- newot[match(rownames(species.spec), newot[, 12]), 4]
+
+head(species.spec, n = 15)
+
+female.markers$pbgene <- newot[match(rownames(female.markers), newot[, 12]), 2]
+female.markers$pfgene <- newot[match(rownames(female.markers), newot[, 12]), 4]
+
+subss <- species.spec[species.spec$p_val_adj < 0.001, ]
+subss2 <- subss[subss$avg_logFC > 2, ]
+
+#write.csv(female.markers, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/female_markers.csv")
+#write.csv(subss, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/female_species_specific.csv")
+#write.csv(subss2, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/female_pf_specific.csv")
+```
+```
+
+
+```{r, tidy=TRUE}
+
+avg.f.cells$species.spec <- rep("FALSE", length(avg.f.cells$Pfa))
+avg.f.cells[which(rownames(avg.f.cells) %in% rownames(subss)), ]$species.spec <- "TRUE"
+ggplot(avg.f.cells, aes(x=Pbe, y=Pfa)) + geom_point(aes(colour=species.spec)) 
+
+avg.f.cells$species.spec <- rep("FALSE", length(avg.f.cells$Pfa))
+avg.f.cells[which(rownames(avg.f.cells) %in% rownames(subss2)), ]$species.spec <- "TRUE"
+ggplot(avg.f.cells, aes(x=Pbe, y=Pfa)) + geom_point(aes(colour=species.spec)) 
+
+
+```
+
+
+```{r, tidy=TRUE}
+head(female.markers)
+
+avg.f.cells$cons.markers <- rep("FALSE", length(avg.f.cells$Pfa))
+avg.f.cells[which(rownames(avg.f.cells) %in% rownames(female.markers)), ]$cons.markers <- "TRUE"
+
+ggplot(avg.f.cells, aes(x=Pbe, y=Pfa)) + geom_point(aes(colour=cons.markers, shape=species.spec)) 
+
+```
+
+##try the same with ookinetes
+
+```{r, tidy=TRUE}
+Idents(p.combined) <- "celltype"
+ook.cells <- subset(p.combined, idents = "2")
+Idents(ook.cells) <- "species"
+avg.ook.cells <- log1p(AverageExpression(ook.cells, verbose = FALSE)$RNA)
+avg.ook.cells$gene <- rownames(avg.ook.cells)
+
+ggplot(avg.ook.cells, aes(Pbe, Pfa)) + geom_point() + ggtitle("Clust 2 ook")
+```
+
+
+```{r, tidy=TRUE}
+
+Idents(p.combined) <- "clust_species"
+species.spec <- FindMarkers(p.combined, ident.1 = "2_Pfa", ident.2 = "2_Pbe", verbose = FALSE)
+head(species.spec, n = 15)
+
+species.spec$pbgene <- newot[match(rownames(species.spec), newot[, 12]), 2]
+species.spec$pfgene <- newot[match(rownames(species.spec), newot[, 12]), 4]
+
+head(species.spec, n = 15)
+
+ook.markers$pbgene <- newot[match(rownames(ook.markers), newot[, 12]), 2]
+ook.markers$pfgene <- newot[match(rownames(ook.markers), newot[, 12]), 4]
+
+subss <- species.spec[species.spec$p_val_adj < 0.001, ]
+subss2 <- subss[subss$avg_logFC > 2, ]
+
+#write.csv(ook.markers, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/ook_markers.csv")
+#write.csv(subss, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/ook_species_specific.csv")
+#write.csv(subss2, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/ook_pf_specific.csv")
+```
+
+
+```{r, tidy=TRUE}
+avg.ook.cells$species.spec <- rep("FALSE", length(avg.ook.cells$Pfa))
+avg.ook.cells[which(rownames(avg.ook.cells) %in% rownames(subss)), ]$species.spec <- "TRUE"
+ggplot(avg.ook.cells, aes(x=Pbe, y=Pfa)) + geom_point(aes(colour=species.spec), size=0.8) 
+
+avg.ook.cells$species.spec <- rep("FALSE", length(avg.ook.cells$Pfa))
+avg.ook.cells[which(rownames(avg.ook.cells) %in% rownames(subss2)), ]$species.spec <- "TRUE"
+ggplot(avg.ook.cells, aes(x=Pbe, y=Pfa)) + geom_point(aes(colour=species.spec), size=0.8) + labs(colour="pf.spec")
+
+FeaturePlot(p.combined, features = c("ORTH-1643", "ORTH-1743", "ORTH-2564", "ORTH-883"), min.cutoff = "q9", reduction = "umap")
+
+```
+
+
+```{r, tidy=TRUE}
+head(ook.markers)
+
+avg.ook.cells$cons.markers <- rep("FALSE", length(avg.ook.cells$Pfa))
+avg.ook.cells[which(rownames(avg.ook.cells) %in% rownames(ook.markers)), ]$cons.markers <- "TRUE"
+
+ggplot(avg.ook.cells, aes(x=Pbe, y=Pfa)) + geom_point(aes(colour=cons.markers, shape=species.spec)) 
+
+```
+
+
+##Males
+
+```{r, tidy=TRUE}
+Idents(p.combined) <- "celltype"
+male.cells <- subset(p.combined, idents = "4")
+Idents(male.cells) <- "species"
+avg.male.cells <- log1p(AverageExpression(male.cells, verbose = FALSE)$RNA)
+avg.male.cells$gene <- rownames(avg.male.cells)
+
+ggplot(avg.male.cells, aes(Pbe, Pfa)) + geom_point() + ggtitle("Clust 4 male")
+```
+
+
+```{r, tidy=TRUE}
+
+Idents(p.combined) <- "clust_species"
+species.spec <- FindMarkers(p.combined, ident.1 = "4_Pfa", ident.2 = "4_Pbe", verbose = FALSE)
+head(species.spec, n = 15)
+
+species.spec$pbgene <- newot[match(rownames(species.spec), newot[, 12]), 2]
+species.spec$pfgene <- newot[match(rownames(species.spec), newot[, 12]), 4]
+
+head(species.spec, n = 15)
+
+male.markers$pbgene <- newot[match(rownames(male.markers), newot[, 12]), 2]
+male.markers$pfgene <- newot[match(rownames(male.markers), newot[, 12]), 4]
+
+subss <- species.spec[species.spec$p_val_adj < 0.001, ]
+subss2 <- subss[subss$avg_logFC > 2, ]
+
+#write.csv(male.markers, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/male_markers.csv")
+#write.csv(subss, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/male_species_specific.csv")
+#write.csv(subss2, file = "/Users/vh3/Documents/PfMCA/ANALYSIS_2/pbpf/markers/male_pf_specific.csv")
+```
+
+
+```{r, tidy=TRUE}
+avg.male.cells$species.spec <- rep("FALSE", length(avg.male.cells$Pfa))
+avg.male.cells[which(rownames(avg.male.cells) %in% rownames(subss)), ]$species.spec <- "TRUE"
+ggplot(avg.male.cells, aes(x=Pbe, y=Pfa)) + geom_point(aes(colour=species.spec)) 
+
+avg.male.cells$species.spec <- rep("FALSE", length(avg.male.cells$Pfa))
+avg.male.cells[which(rownames(avg.male.cells) %in% rownames(subss2)), ]$species.spec <- "TRUE"
+ggplot(avg.male.cells, aes(x=Pbe, y=Pfa)) + geom_point(aes(colour=species.spec)) 
+
+
+```
+
+
+```{r, tidy=TRUE}
+head(male.markers)
+
+avg.male.cells$cons.markers <- rep("FALSE", length(avg.male.cells$Pfa))
+avg.male.cells[which(rownames(avg.male.cells) %in% rownames(male.markers)), ]$cons.markers <- "TRUE"
+
+ggplot(avg.male.cells, aes(x=Pbe, y=Pfa)) + geom_point(aes(colour=cons.markers, shape=species.spec)) 
+
+```
+
+
+
+
+```{r}
+#saveRDS(p.combined, file=("pbpfcombo_SeuratInt_20200702.rds"))
+```
+
