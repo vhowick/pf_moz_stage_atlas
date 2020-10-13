@@ -1,0 +1,179 @@
+---
+title: "ALL pfMCA QC"
+author: "Virginia Howick"
+date: "25/05/2020"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r, message=FALSE}
+setwd("/Users/vh3/Documents/PfMCA/ANALYSIS_2")
+require("Matrix")
+library(scater, quietly = TRUE)
+require("SingleCellExperiment")
+options(stringsAsFactors = FALSE)
+library(plotly)
+library(scran)
+library(devtools)
+```
+
+
+```{r}
+molecules <- read.table("/Users/vh3/Documents/PfMCA/expression_matrices/pfMCA_counts_20200516.csv", header = TRUE, sep = ",", row.names=1, stringsAsFactors = TRUE)
+anno <- read.delim("/Users/vh3/Documents/PfMCA/expression_matrices/pfMCA_pheno.csv", header = TRUE, sep = ",", row.names = 1)
+
+anno <- anno[match(colnames(molecules), anno$xfilename), ]
+
+mca <- SingleCellExperiment(assays = list(
+  counts = as.matrix(molecules),
+  logcounts = log2(as.matrix(molecules) + 1)
+), colData = anno)
+```
+
+Calculate QC metrics for cells and gene, remove failed spz run
+```{r}
+CellQC <- perCellQCMetrics(mca)
+FeatQC <- perFeatureQCMetrics(mca)
+
+colData(mca) <- cbind(colData(mca), CellQC)
+rowData(mca) <- cbind(rowData(mca), FeatQC)
+
+mca <- mca[, mca$stage != "spz"]
+mca <- mca[, mca$stage != "mozSpz"]
+mca <- mca[, mca$stage != "ffeSpz"]
+
+
+```
+
+
+QC by stage
+```{r}
+tab <- as.data.frame(colData(mca))
+ggplot(tab, aes(x=detected, fill = stage)) + geom_histogram(binwidth = 10) + facet_grid(stage~., scales="free") + geom_vline(xintercept = 40, col ="red")
+
+mca$group <- rep("spz", length(mca$sample_id))
+mca[, which(mca$stage=="gam")]$group <- "gam"
+mca[, which(mca$stage=="ook")]$group <- "ook"
+
+tab <- as.data.frame(colData(mca))
+ggplot(tab, aes(x=detected, fill = group)) + geom_histogram(binwidth = 30) + facet_grid(group~., scales="free") +geom_vline(xintercept = 40, col ="red")
+
+tab <- as.data.frame(colData(mca))
+ggplot(tab, aes(x=sum, fill = group)) + geom_histogram(bins=100) + facet_grid(group~., scales="free") +geom_vline(xintercept = 5000, col ="red")
+
+```
+
+QC of single cells based on Txnal profile
+
+```{r}
+
+mca <- mca[, mca$num_cells=="SC"]
+
+mcasmall <- mca[,colData(mca)$group == "spz"]
+mcamedium <- mca[, colData(mca)$group == "ook" ]
+mcalarge <- mca[, colData(mca)$group == "gam" ]
+
+#QC of gams
+
+filter_by_total_counts <- (mcalarge$sum > 10000)
+table(filter_by_total_counts)
+# Filter cells with low numbers of features detected
+filter_by_expr_features <- (mcalarge$detected > 500)
+table(filter_by_expr_features)
+
+mcalarge$use <- (filter_by_expr_features & filter_by_total_counts)
+table(mcalarge$use)
+
+#QC of ookinetes
+
+# Filter cells with low counts
+filter_by_total_counts <- (mcamedium$sum > 5000)
+table(filter_by_total_counts)
+# Filter cells with low numbers of features detected
+filter_by_expr_features <- (mcamedium$detected > 400)
+table(filter_by_expr_features)
+
+mcamedium$use <- (filter_by_expr_features & filter_by_total_counts)
+table(mcamedium$use)
+
+
+##QC of Spz
+
+# Filter cells with low counts
+filter_by_total_counts <- (mcasmall$sum > 5000)
+table(filter_by_total_counts)
+# Filter cells with low numbers of features detected
+filter_by_expr_features <- (mcasmall$detected > 40)
+table(filter_by_expr_features)
+
+mcasmall$use <- (filter_by_expr_features & filter_by_total_counts)
+table(mcasmall$use)
+
+mca <- cbind(mcasmall, mcamedium)
+mca <- cbind(mca, mcalarge)
+table(mca$use, mca$group)
+
+#make QCed SingleCellExperiment
+mca.qc.cells <- mca[ , colData(mca)$use]
+meds <- tapply(colData(mca.qc.cells)$detected, colData(mca.qc.cells)$group, median)
+meds
+
+```
+
+
+```{r}
+# Gene filtering 
+filter_genes <- apply(counts(mca[ , colData(mca)$use]), 1, function(x) length(x[x >= 1]) >= 2)
+
+table(filter_genes)
+rowData(mca)$use <- filter_genes
+
+dim(mca[rowData(mca)$use, colData(mca)$use])
+
+assay(mca, "logcounts_raw") <- log2(counts(mca) + 1)
+reducedDim(mca) <- NULL
+
+
+mca.qc <- mca[rowData(mca)$use, colData(mca)$use]
+
+
+```
+
+
+```{r}
+
+
+clusters <- quickCluster(mca.qc)
+mca.qc <- computeSumFactors(mca.qc, clusters=clusters, min.mean=1)
+summary(sizeFactors(mca.qc))
+
+mca.qc <- logNormCounts(mca.qc, log=FALSE, size_factors=sizeFactors(mca.qc))
+mca.qc <- logNormCounts(mca.qc, log=TRUE, size_factors=sizeFactors(mca.qc))
+
+cpm(mca.qc) <- calculateCPM(mca.qc) #divide each column by its total and multiple by 1 million
+assay(mca.qc, "log_cpm") <- log2(calculateCPM(mca.qc) + 1)
+
+mca.qc <- runPCA(mca.qc,  ntop=150)
+set.seed(112)
+mca.qc <- runUMAP(mca.qc, ntop=150, n_neighbors = 5)
+set.seed(666)
+mca.qc <- runTSNE(mca.qc,  ntop = 150)
+
+plotPCA(mca.qc, colour_by = "stage")
+plotUMAP(mca.qc, colour_by = "stage")
+plotTSNE(mca.qc, colour_by = "stage")
+
+mca.qc
+assays(mca.qc)
+
+#saveRDS(mca.qc, file = "pf.mca.qc_20200525.rds")
+
+```
+
+```{r}
+session_info()
+```
+
