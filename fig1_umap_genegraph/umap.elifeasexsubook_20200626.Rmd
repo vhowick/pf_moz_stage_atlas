@@ -1,0 +1,66 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+
+```{r, message=FALSE}
+setwd("/Users/vh3/Documents/PfMCA/ANALYSIS_2/")
+library(scater)
+library(viridis)
+library(RColorBrewer)
+library(dplyr)
+```
+
+```{r}
+mca.qc2 <- readRDS("pfmca.withelifeasex.subook_20200626.rds")
+```
+
+
+```{r}
+set.seed(666)
+mca.qc2 <- runUMAP(mca.qc2, n_neighbors = 5, min_dist = 1, spread = 3)
+p <- plotUMAP(mca.qc2, colour_by = "stage")
+p
+all2 <- p$data
+colnames(all2) <- c("UMAP1", "UMAP2", "stage")
+colors = c(asex = "red", gam = "orange", ook = "gold", ooSpz = "seagreen", hlSpz = "turquoise3", 
+    sgSpz = "#00CCFF", bbSpz = "#6633FF", fbSpz = "#CC00CC")
+
+ggplot(all2, aes(UMAP1, UMAP2)) + geom_point(aes(colour = stage), size=0.8) + theme_bw() + 
+    scale_colour_manual(values = colors, breaks = c("asex", "gam", "ook", "ooSpz", 
+        "hlSpz", "sgSpz", "bbSpz", "fbSpz"), labels = c("asex", "gam", "ook", "ooSpz", 
+        "hlSpz", "sgSpz", "injSpz", "actSpz")) + theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.position = "none")
+
+ggplot(all2, aes(UMAP1, UMAP2)) + geom_point(aes(colour = stage), size=2) + theme_bw() + 
+    scale_colour_manual(values = colors, breaks = c("asex", "gam", "ook", "ooSpz", 
+        "hlSpz", "sgSpz", "bbSpz", "fbSpz"), labels = c("asex", "gam", "ook", "ooSpz", 
+        "hlSpz", "sgSpz", "injSpz", "actSpz")) + theme(axis.text = element_blank(), 
+    axis.ticks = element_blank(), panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+    axis.title = element_text(size = 10), legend.text = element_text(size = 10), 
+    legend.title = element_text(size = 10))
+```
+
+```{r}
+p <- plotUMAP(mca.qc2, colour_by = "seurat_clusters")
+p
+all2 <- p$data
+colnames(all2) <- c("UMAP1", "UMAP2", "cluster")
+
+ggplot(all2, aes(UMAP1, UMAP2)) + geom_point(aes(colour = as.factor(cluster)), 
+    size = 0.8) + theme_bw() + theme(axis.text = element_blank(), axis.ticks = element_blank(), 
+    panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title = element_text(size = 10), 
+    legend.position="none")
+
+ggplot(all2, aes(UMAP1, UMAP2)) + geom_point(aes(colour = as.factor(cluster)), 
+    size = 2) + theme_bw() + theme(axis.text = element_blank(), axis.ticks = element_blank(), 
+    panel.grid.major = element_blank(), panel.grid.minor = element_blank(), axis.title = element_text(size = 10), 
+    legend.text = element_text(size = 10), legend.title = element_blank())
+```
+

@@ -1,0 +1,231 @@
+---
+title: "Gene graph with elife asexuals, all genes and feature slxn with scmap"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+
+```{r, message=FALSE}
+setwd("/Users/vh3/Documents/PfMCA/ANALYSIS_2/")
+library(scater)
+library(pheatmap)
+library(viridis)
+library(scran)
+library(Seurat)
+library(M3Drop)
+library(RColorBrewer)
+library(dplyr)
+library(plotly)
+```
+
+all atlas data with elife 2018 data added back in, remove gams from 2018 paper and 15 min fb spz
+```{r, tidy=TRUE}
+mca.qc <- readRDS("/Users/vh3/Documents/PfMCA/ANALYSIS_2/pf.mca.plus.elife_20200527.rds")
+
+mca.qc$stage_yr <- paste(mca.qc$stage, mca.qc$year, sep="_")
+
+mca.qc <- mca.qc[, mca.qc$stage_yr != "gam_2016"]
+
+mca.qc[, which(is.na(mca.qc$time))]$time <- "0min"
+mca.qc <- mca.qc[, mca.qc$time != "15min"]
+
+ookclusts <- read.csv("ook_suerat_clusters_20200625.csv", row.names = 1)
+ookclusts$xfilename <- rownames(ookclusts)
+clust2 <- ookclusts[ookclusts$seurat_clusters==2, ]
+
+mca.qc2 <- mca.qc[, !(mca.qc$xfilename %in% clust2$xfilename)]
+
+mca.qc.counts <- as.data.frame(counts(mca.qc2))
+
+#write.csv(mca.qc.counts, file="mca.qc.counts.elifeasex.subook.csv")
+
+
+
+```
+
+convert to seurat to cluster all cells and subset 100 cells from the large spz clusters
+```{r, tidy=TRUE}
+mca.qc.seurat <- as.Seurat(mca.qc2, counts = "counts", data = "logcounts")
+mca.qc.seurat <- FindVariableFeatures(mca.qc.seurat, selection.method = "vst", nfeatures = 2000)
+all.genes <- rownames(mca.qc.seurat)
+mca.qc.seurat <- ScaleData(mca.qc.seurat, features = all.genes)
+
+mca.qc.seurat <- RunPCA(mca.qc.seurat, features = VariableFeatures(object = mca.qc.seurat))
+DimPlot(mca.qc.seurat, reduction = "pca")
+#JackStrawPlot(mca.qc.seurat, dims = 1:10)
+ElbowPlot(mca.qc.seurat)
+mca.qc.seurat <- FindNeighbors(mca.qc.seurat, dims = 1:10)
+mca.qc.seurat <- FindClusters(mca.qc.seurat, resolution = 0.5)
+
+mca.qc.seurat <- RunUMAP(mca.qc.seurat, dims = 1:10)
+
+DimPlot(mca.qc.seurat, reduction = "umap")
+
+table(Idents(mca.qc.seurat))
+table(Idents(mca.qc.seurat), mca.qc.seurat@meta.data$stage)
+table(mca.qc.seurat@meta.data$seurat_clusters)
+clusts <- mca.qc.seurat@meta.data["seurat_clusters"]
+write.csv(clusts, file="Seurat_clusters_forgenegraph.subook.elilfeasex_20200625.csv")
+
+smd <- as.data.frame(mca.qc.seurat@meta.data)
+
+spz <- c(0,1)
+subsmd <- smd[smd$seurat_clusters %in% spz, ]
+
+subsub <- subsmd %>% group_by(seurat_clusters) %>% sample_n(size = 100)
+
+keepers <- subsub$xfilename
+#write.csv(keepers, file="subsampledspz_20200616.csv")
+other <- c(2, 3, 4, 5, 6, 7)
+othersub <- smd[smd$seurat_clusters %in% other, ]
+
+keepers2 <- othersub$xfilename
+
+all <- c(keepers, keepers2)
+
+mca.qc2$seurat_clusters <- smd$seurat_clusters
+#saveRDS(mca.qc2, file="pfmca.withelifeasex.subook_20200626.rds")
+mca.qc.sub <- mca.qc2[, colnames(mca.qc2) %in% all]
+
+#write.csv(as.data.frame(counts(mca.qc.sub)), file="submca.qc.counts.elifeasex.subook_forgenegraph.csv")
+```
+
+look into feature selection, stick with scmap top 2000 features
+```{r, tidy=TRUE}
+norm <- assay(mca.qc.sub, "normcounts")
+ M3Drop_genes <- M3DropFeatureSelection(norm, mt_method="fdr", mt_threshold=0.5)
+ 
+ library(scmap)
+ rowData(mca.qc.sub)$feature_symbol <- rownames(mca.qc.sub)
+ test <- selectFeatures(mca.qc.sub, suppress_plot = FALSE, n_features = 2000)
+ 
+ test2 <- test[rowData(test)$scmap_features==TRUE, ]
+ 
+ #write.csv(as.data.frame(counts(test2)), file="submca.qc.counts.elifeasex.subook.featslxn_forgenegraph.csv")
+```
+
+k15 with feature selection
+```{r, tidy=TRUE}
+coord <- read.csv("/Users/vh3/Documents/Ookinetes_2020/genegraph/subclusters.submca.subook.elifeasex.featslxn.k15linlognode_out.csv", header=TRUE)
+colnames(coord) <-c("gene_id", "X", "Y", "cluster")
+
+ggplot(coord, aes(X, Y)) + geom_point(aes(colour=as.factor(cluster))) + theme_classic()
+```
+
+
+```{r, tidy=TRUE}
+rowData(test2)$X_graph <- coord[match(rownames(test2), coord[, 1]), 2]
+rowData(test2)$Y_graph <- coord[match(rownames(test2), coord[, 1]), 3]
+rowData(test2)$Cluster_k15 <- coord[match(rownames(test2), coord[, 1]), 4]
+
+
+
+lcpm_mat <- as.data.frame(assays(test2)[["logcounts"]])
+
+lcpm_mat$Cluster_k15 <- rowData(test2)$Cluster_k15
+lcpm_mat <- as.data.frame(lcpm_mat)
+lcpm_mat_sub <- lcpm_mat[!is.na(lcpm_mat$Cluster_k15), ]
+
+clustmean <- aggregate(lcpm_mat_sub[, 1:623], by = list(as.factor(as.character(lcpm_mat_sub$Cluster_k15))), mean)
+rownames(clustmean) <- clustmean$Group.1
+
+clustmean2 <- clustmean[, 2:624]
+
+
+stage <- as.data.frame(colData(mca.qc.sub)["stage"])
+cluster <- as.data.frame(colData(mca.qc.sub)["seurat_clusters"])
+
+
+pheatmap(clustmean2, annotation_col = stage, show_colnames = FALSE, show_rownames = TRUE, color=brewer.pal(9, "PuRd"))
+table(rowData(mca.qc.sub)$Cluster_k15)
+
+pheatmap(clustmean2, annotation_col = cluster, show_colnames = FALSE, show_rownames = TRUE, color=brewer.pal(9, "PuRd"))
+table(rowData(mca.qc.sub)$Cluster_k15)
+
+
+
+clustmean <- aggregate(lcpm_mat_sub[, 1:623], by = list(as.factor(as.character(lcpm_mat_sub$Cluster_k15))), mean)
+rownames(clustmean) <- clustmean$Group.1
+
+# create a vector with letters in the desired order
+#x <- c(5, 10, 11, 2, 9, 6, 7, 13, 3, 14, 1, 4, 12, 0, 8)
+x <- c(14, 5, 2, 10, 3, 11, 9, 13, 6, 12, 7, 0, 8, 4, 1)
+clustmean3 <- clustmean %>%
+  slice(match(x, clustmean$Group.1))
+
+rownames(clustmean3) <- clustmean3$Group.1
+
+clustmean3 <- clustmean3[, 2:624]
+
+
+colors     = c("asex"="red","gam"="orange", "ook"="gold", "ooSpz"="seagreen", "hlSpz"="turquoise3", "sgSpz"="#00CCFF", "bbSpz"="#6633FF", "fbSpz"="#CC00CC")
+
+ann_c <- list(
+  stage = colors
+)
+
+pheatmap(clustmean3, annotation_col = stage, cluster_rows = FALSE, show_colnames = FALSE, show_rownames = TRUE, color=brewer.pal(9, "PuRd"), annotation_colors =ann_c)
+
+
+```
+
+
+```{r}
+ppt <- read.csv("/Users/vh3/Documents/PfMCA/ANALYSIS_2/ppt_20200625.csv")
+subppt <- ppt[ppt$ppt %in% colnames(clustmean3), ]
+#x <- ppt$ppt
+
+clustmean4 <- clustmean3[, subppt]
+
+pheatmap(clustmean4, annotation_col = stage, cluster_rows = FALSE, cluster_cols=FALSE, show_colnames = FALSE, show_rownames = TRUE, color=brewer.pal(9, "PuRd"), annotation_colors =ann_c)
+
+```
+
+```{r}
+library(colorspace)
+hcl_palettes(plot = TRUE)
+
+ggplot(coord, aes(X, Y)) + geom_point(aes(colour=as.factor(cluster))) + 
+  scale_color_discrete_qualitative(palette = "Dynamic") +
+  theme_classic()
+
+ggplot(coord, aes(X, Y)) + geom_point(aes(colour=as.factor(cluster))) + 
+  scale_color_discrete_sequential(palette = "Viridis") +
+  theme_classic()
+
+
+clust_col <- c("14" = "thistle3", "0" = "gold2", "4" = "mediumseagreen", "5" = "lightseagreen", "19" = "navy" , "2" = "limegreen", "15" = "palegreen", "12" = "cyan3", "8" = "navy", "13" = "darkmagenta", "16" = "cadetblue", "7" = "dodgerblue", "6" = "salmon", "11" = "deepskyblue4", "3" = "purple", "18" = "lightseagreen","17" = "blue", "9" = "pink",  "10"= "red", "1" = "darkgrey")
+
+
+ggplot(coord, aes(X, Y)) + geom_point(aes(colour=as.factor(cluster)), size=0.8) + 
+  scale_color_manual(values = clust_col) +
+  theme_classic() + theme(legend.position = "none")
+
+ggplot(coord, aes(X, Y)) + geom_point(aes(colour=as.factor(cluster)), size=2) + 
+  scale_color_manual(values = clust_col) +
+  theme_classic()
+
+
+
+clust_col <- c("cluster_14" = "thistle3", "cluster_0" = "gold2", "cluster_4" = "mediumseagreen", "cluster_5" = "lightseagreen", "cluster_2" = "limegreen", "cluster_12" = "cyan3", "cluster_8" = "navy", "cluster_13" = "darkmagenta", "cluster_7" = "dodgerblue", "cluster_6" = "salmon", "cluster_11" = "deepskyblue4", "cluster_3" = "purple", "cluster_9" = "pink",  "cluster_10"= "red", "cluster_1" = "darkgrey")
+
+x <- c(14, 5, 2, 10, 3, 11, 9, 13, 6, 12, 7, 0, 8, 4, 1)
+x2 <- as.data.frame(x)
+x2$x <- as.character(x2$x)
+x2$ar <- paste("cluster_", x2$x, sep="")
+rownames(x2) <- x2$ar
+ar <- x2["ar"]
+clustmean5 <- clustmean4
+rownames(clustmean5) <- ar$ar
+
+ann_c <- list(
+  stage = colors,
+  ar = clust_col
+)
+
+
+pheatmap(clustmean5, annotation_col = stage, annotation_row = ar, cluster_rows = FALSE, cluster_cols=FALSE, show_colnames = FALSE, show_rownames = TRUE, color=brewer.pal(9, "PuRd"), annotation_colors =ann_c)
+```
+
