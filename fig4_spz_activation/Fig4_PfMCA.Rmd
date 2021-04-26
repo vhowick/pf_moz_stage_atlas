@@ -1,0 +1,282 @@
+---
+title: "Fig4_spz_activation"
+author: "Eliana"
+date: "23/04/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+setwd("/Users/eliana/Desktop/Pf-MCA")
+
+library(Seurat)
+library(ggplot2)
+library(reshape2)
+library(plyr)
+library(RColorBrewer)
+library(wesanderson)
+library(tidyverse)
+library(car)
+library(rstatix)
+library(ggpubr)
+
+```
+
+
+
+```{r }
+
+#SCE with sgSpz, injSpz, and actSpz
+act <- mca.qc.all[, mca.qc.all$day == "day20" | mca.qc.all$day == "day18"| mca.qc.all$day == "day17"]
+
+spz_activation <- CreateSeuratObject(counts = counts(act), meta.data = as.data.frame(colData(act)))
+spz_activation
+spz_activation.counts_unfiltered <- as.matrix(spz_activation@assays$RNA@counts)
+spz_activation <- NormalizeData(spz_activation, normalization.method = "LogNormalize", scale.factor = 10000)
+# set rna
+DefaultAssay(spz_activation) <- "RNA"
+
+spz_activation <- FindVariableFeatures(spz_activation, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+all.genes <- rownames(spz_activation)
+spz_activation <- ScaleData(spz_activation, do.center = T, do.scale = T)
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(spz_activation)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE, xnudge = 0, ynudge = 0)
+plot1 + plot2
+
+
+#Perform linear dimensional reduction
+spz_activation <- RunPCA(spz_activation, pc.genes = spz_activation@var.genes) 
+spz_activation <- RunUMAP(object = spz_activation, features = VariableFeatures(object = spz_activation))
+DimPlot(spz_activation, group.by = "stage", reduction = "pca", dims = c(1, 2), pt.size = 1) + ggtitle(label = "PCA")
+DimPlot(spz_activation, group.by = "stage", reduction = "umap", dims = c(1, 2), pt.size = 1) + ggtitle(label = "UMAP")
+
+#Determine the ‘dimensionality’ of the dataset
+spz_activation <- JackStraw(spz_activation, num.replicate = 100, reduction = "pca")
+spz_activation <- ScoreJackStraw(spz_activation, dims = 1:20, reduction = "pca")
+JackStrawPlot(spz_activation, dims = 1:20)
+
+
+set.seed(1)
+
+#Clustering the cells
+spz_activation <- FindNeighbors(spz_activation, reduction = "pca", dims =  1:10, do.plot= TRUE)
+spz_activation <- FindClusters(spz_activation, resolution = 0.4, dims = 1:10, n.start = 100, n.iter = 10)
+head(Idents(spz_activation), 5)
+
+
+#Run non-linear dimensional reduction
+set.seed(1)
+spz_activation <- RunUMAP(spz_activation, dims =  1:10)
+spz_activation <- RunPCA(spz_activation, dims =  1:10)
+
+DimPlot(spz_activation, label = TRUE, reduction = "umap", pt.size = 1, group.by = "time") 
+DimPlot(spz_activation, label = TRUE, reduction = "pca", dims = c(1, 2), pt.size = 1) 
+
+myday20colors<- c("aquamarine3", "deepskyblue4")
+
+#RENAME CLUSTERS
+Idents(spz_activation ) <- "seurat_clusters"  
+new.cluster.ids <- c("C0", "C1")
+names(x = new.cluster.ids) <- levels(x = spz_activation)
+spz_activation <- RenameIdents(object = spz_activation, new.cluster.ids)
+
+# UMAP of cells in each cluster by time of activation
+DimPlot(spz_activation, reduction = "umap",
+        label = FALSE, 
+        split.by = "time", cols = myday20colors, pt.size = 1.5, shape.by = "stage")  + NoAxes()
+
+
+saveRDS(spz_activation, file= "/Users/eliana/Desktop/Pf-MCA/spz_activation.rds")
+
+
+#Finding differentially expressed features 
+
+# find all markers of cluster 0
+cluster0.markers <- FindMarkers(spz_activation, ident.1 = 0, test.use = "MAST", min.pct = 0.25)
+head(cluster0.markers, n = 5)
+write.csv(cluster0.markers, file = "/Users/eliana/Desktop/Pf-MCA/cluster0.markers.csv", row.names = TRUE)
+
+# find all markers of cluster 1
+cluster1.markers <- FindMarkers(spz_activation, ident.1 = 1, test.use = "MAST", min.pct = 0.25)
+head(cluster1.markers, n = 5)
+write.csv(cluster1.markers, file = "/Users/eliana/Desktop/Pf-MCA/cluster1.markers.csv", row.names = TRUE)
+
+write.csv(spz_activation.markers,"/Users/eliana/Desktop/Pf-MCA/markers-every-cluster_day20.csv", row.names = TRUE)
+
+
+# find genes that separates cluster 0 & cluster 1 by specifying both ident.1 and ident.2 
+cluster01.markers2 <- FindMarkers(spz_activation, ident.1 = 0, ident.2 = 1, test.use = "MAST", min.pct = 0.10)
+print(x = head(x = cluster01.markers2, n = 10))
+write.csv(cluster01.markers2,"/Users/eliana/Desktop/Pf-MCA/cluster01.markers_day20_minpct01.csv", row.names = TRUE)
+
+
+#Figure 4c; distribution of cells per cluster
+
+# Extract identity and sample information from seurat object to determine the number of cells per cluster per sample
+n_cells_act <- FetchData(spz_activation, 
+                     vars = c("ident", "stage", "time", "treatment")) %>%
+        dplyr::count(ident, stage, time, treatment) %>%
+        tidyr::spread(ident, n)
+
+# View table
+View(n_cells_act)
+write.csv(n_cells_act,"/Users/eliana/Desktop/Pf-MCA/cellspercluster_spz_activation.csv", row.names = FALSE)
+
+
+dat <- read.csv(file.choose(), header = TRUE)
+colnames(dat)[1] <- "ID"
+
+p <- ggplot()+ geom_bar(data=dat, aes(Treatment, Proportion, fill=Cluster), stat="identity", position="stack")+
+facet_wrap(.~Time)
+
+dat$Treatment <- factor(dat$Treatment, levels=c("sgSpz", "injSpz", "medium", "contact", "traversal"))
+
+myday20colors<- c("aquamarine3", "deepskyblue4")
+
+ggplot(data=dat, aes(Treatment, Proportion, fill=Cluster))+ 
+geom_bar(width=1, colour="lightgrey", stat="identity", position="stack")+
+facet_grid(.~Time, switch="x", space="free_x", scales="free_x")+
+theme_classic()+ labs(x="")+
+scale_fill_manual(name="Cluster",values = myday20colors)+
+theme(panel.spacing=unit(0, "lines"), axis.text.x = element_text(angle = 45, hjust = 1), strip.background=element_blank(), strip.placement="outside") + theme(text = element_text(size=20))
+
+#Fig4d
+### FUNCTIONS
+
+make_set_dataframe <- function(sce,gene.set,pt) {
+  
+  ## INPUT:
+  ## sce = single cell experiment (seurat)
+  ## gene.set = data.frame with columns: Gene.Set, Gene.ID
+  ## pt = pseudotime by cell
+  
+  ## return df with gene set as row, cells as cols, values are averaged expression for that module/cell
+  set_expression <- ddply(.data = gene.set, 
+                          .variables = "Gene.Set", 
+                          .fun = function(x) colSums(matrix(exp(as.matrix(GetAssayData(sce)[x$Gene.ID,]))-1,ncol = ncol(sce))))
+  
+  ## move Gene.Set to rownames and delete column
+  rownames(set_expression) <- set_expression$Gene.Set
+  set_expression$Gene.Set = NULL
+  
+  ## add pseudotime and order (COMMENT OUT FOR ACTIVATION)
+  set_expression <- data.frame(pt=pt, t(set_expression))
+  set_expression <-set_expression[order(set_expression$pt), ]
+  
+  ## JUST FOR ACTIVATION
+  # set_expression <- data.frame(pt=pt, t(set_expression))
+  
+  ## correct for gene to gene variances by dividing values by mean expression of each gene
+  set_expression=data.frame(pt=set_expression$pt,
+  t(t(set_expression[,2:ncol(set_expression)])/apply(set_expression[,2:ncol(set_expression)],2,mean)))
+  
+  return(set_expression)
+}
+
+make_gene_dataframe <- function(sce,gene.list,pt) {
+  
+  ##Same thing but not averaging across the set, keeping individual gene values (for thin lines)
+  
+  gene <- data.frame(matrix(exp(as.matrix(GetAssayData(sce)[gene.list[,4],]))-1,ncol = ncol(sce)))
+  
+  print(gene)
+  
+}
+
+#### SPZ ACTIVATION
+spz_activation <- readRDS('~/PhD/Ongoing_projects/Imperial_RNAVelo/eliana_plotting/spz_activation/gcdataday20.rds')
+spz_activation_set <- read.csv('~/PhD/Ongoing_projects/Imperial_RNAVelo/eliana_plotting/spz_activation/geneset_activation.csv', stringsAsFactors = F)
+spz_activation_set$Gene.ID <- unname(sapply(spz_activation_set$Gene.ID, function(x){gsub("_",'-',x)}))
+
+## make dfs
+spz_activation_expression <- melt(make_set_dataframe(spz_activation, spz_activation_set, spz_activation$time),
+                           id.vars = 'pt')
+
+## PLOT
+
+spz_activation_plot <- ggplot(spz_activation_expression, aes(x=pt, y=value)) +
+  geom_dotplot(aes(fill=variable),
+               binaxis ='y',
+               binwidth = 0.08,
+               stackdir = 'center',
+               colour=NA,
+               show.legend = F) +
+  stat_summary(fun.y = median, fun.ymin = median, fun.ymax = median,
+               geom = "crossbar", width = 0.7) +
+  
+  scale_y_continuous(limits = c(0.1,6)) +
+  scale_fill_manual(values= c("aquamarine3", "deepskyblue4")) +
+  
+  ### AESTHETICS
+  labs(x='time', y='gene expression') +
+  theme_light() +
+  theme(axis.text.x = element_text(size = x.text.size-5)) +
+  theme(axis.text.y = element_text(size=y.text.size-5)) +
+  theme(axis.title = element_text(size=max(x.text.size-5,y.text.size-5),face='bold')) +
+  theme(axis.ticks = element_line(colour="grey30"))
+spz_activation_plot + facet_wrap(~variable)
+
+ggsave(plot=spz_activation_plot + facet_wrap(~variable), 
+       filename = "~/PhD/Ongoing_projects/Imperial_RNAVelo/eliana_plotting/FINAL_PLOTS/spz_activation_plot.pdf",
+       device = 'pdf', width = 6, height=3, units = 'in')
+
+
+
+#Figure 4e; PTEX150 expression by time of activation
+FeaturePlot(spz_activation, features = c( "PF3D7-1436300.1"),split.by = "time", cols= c("lightgrey" ,"red"), dims = c(1,2), min.cutoff = "q10", max.cutoff = "q90",  label = TRUE)#PTEX150
+
+#Figure 4g; PTEX150 quantif
+
+data<- read.csv(file.choose(), header = TRUE)
+
+p <- ggplot(data=data, aes(x=Time, y=PTEX150, fill=Time)) + 
+  stat_boxplot(geom = "errorbar", width = 0.2) + 
+  geom_boxplot( notch=TRUE)+
+  theme_classic()+ labs(x="")+
+  theme(text = element_text(size=20))
+
+p + geom_jitter(shape=16, position=position_jitter(0.2))+
+scale_fill_manual(values=c("#A2A475", "#81A88D", "#972D15"))+
+  scale_x_discrete(limits=c("0min", "60min", "120min"))
+
+data %>%
+  group_by(Time) %>%
+  get_summary_stats(PTEX150, type = "mean_sd")
+
+# Build the linear model
+model  <- lm(PTEX150 ~ Time, data = data)
+# Create a QQ plot of residuals
+ggqqplot(residuals(model))
+
+data %>% levene_test(PTEX150 ~ Time)
+
+#one-way ANOVA
+res.aov <- data %>% anova_test(PTEX150 ~ Time)
+res.aov
+
+# Pairwise comparisons
+pwc <- data %>% tukey_hsd(PTEX150 ~Time)
+pwc
+
+
+pwc2 <- data %>% 
+  pairwise_t_test(
+    PTEX150 ~Time, pool.sd = FALSE,
+    p.adjust.method = "bonferroni"
+    )
+pwc2
+
+
+    
+
+
+
+```
+
+
+```{r }
+
+```
+

@@ -1,0 +1,543 @@
+---
+title: "Fig3_sporozoite_clusters_pseudotime"
+author: "Eliana"
+date: "23/04/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+setwd("/Users/eliana/Desktop/Pf-MCA")
+
+library(Seurat)
+library(ggplot2)
+library(reshape2)
+library(plyr)
+library(RColorBrewer)
+library(wesanderson)
+library(nationalparkcolors)
+library(monocle)
+library(slingshot)
+library(M3Drop)
+
+```
+
+
+```{r}
+
+#  create a Seurat object ook-oo-hl-sg-bb
+
+mca.qc.all <- readRDS(file= "/Users/eliana/Desktop/Pf-MCA/All/pf.mca.qc_20200525.rds")
+
+devspz <- mca.qc.all[, mca.qc.all$stage != "mozSpz" & mca.qc.all$stage != "ffeSpz" & mca.qc.all$stage != "gam" &  mca.qc.all$stage != "fbSpz"]
+
+dev <- CreateSeuratObject(counts = counts(devspz), meta.data = as.data.frame(colData(devspz)))
+dev
+
+dev <- NormalizeData(dev, normalization.method = "LogNormalize", scale.factor = 10000)
+
+# set rna
+DefaultAssay(dev) <- "RNA"
+
+dev <- FindVariableFeatures(dev, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+all.genes <- rownames(dev)
+dev <- ScaleData(dev, do.center = T, do.scale = T)
+
+
+# plot variable features with and without labels
+plot1 <- VariableFeaturePlot(dev)
+plot2 <- LabelPoints(plot = plot1, points = top10, repel = TRUE, xnudge = 0, ynudge = 0)
+plot1 + plot2
+
+
+#Perform linear dimensional reduction
+dev <- RunPCA(dev, pc.genes = dev@var.genes) 
+dev <- RunUMAP(object =dev, features = VariableFeatures(object = dev))
+DimPlot(dev, group.by = "stage", reduction = "pca", dims = c(1, 2), pt.size = 1) + ggtitle(label = "PCA")
+DimPlot(dev, group.by = "stage", reduction = "umap", dims = c(1, 2), pt.size = 1) + ggtitle(label = "UMAP")
+
+
+#Determine the ‘dimensionality’ of the dataset
+dev <- JackStraw(dev, num.replicate = 100, reduction = "pca")
+dev <- ScoreJackStraw(dev, dims = 1:20, reduction = "pca")
+JackStrawPlot(dev, dims = 1:20)
+
+
+# statistic significant PCs from JackStraw plot
+use.pcs <- c(1,2,3,4,5,7,8,9,10,12,13,14,15,16,17,19,20)
+set.seed(555)
+
+#Clustering the cells
+dev <- FindNeighbors(dev, reduction = "pca", dims = use.pcs, do.plot= TRUE)
+dev <- FindClusters(dev, resolution = 0.6, dims = use.pcs, n.start = 100, n.iter = 10)
+head(Idents(dev), 5)
+
+
+#Run non-linear dimensional reduction 
+set.seed(222)
+dev <- RunTSNE(dev, dims = use.pcs, nthreads = 4, max_iter = 2000, do.fast = T)
+dev <- RunUMAP(dev, dims = use.pcs)
+dev <- RunPCA(dev, dims = use.pcs)
+
+
+# Relevel object@ident
+order2 <- c("ook","ooSpz", "hlSpz", "sgSpz", "bbSpz" )
+colors_stages = c( ook = "gold", ooSpz = "seagreen3", hlSpz = "turquoise4", sgSpz = "#00CCFF", bbSpz = "#6633FF")
+dev@meta.data$stage <- factor(x = dev@meta.data$stage , levels = order2)
+
+# UMAP of cells in each cluster by sample
+DimPlot(dev, label = TRUE, reduction = "umap", pt.size = 1, group.by = "stage", repel = TRUE, cols=colors_stages )+ NoAxes()
+
+
+# Save the objects as separate matrices for input in slingshot
+dimredspz<- dev@reductions$umap@cell.embeddings
+clusteringspz <- dev$seurat_clusters
+dev.counts <- as.matrix(dev@assays$RNA@counts[dev@assays$RNA@var.features, ])
+
+
+saveRDS(dimredspz, file= "/Users/eliana/Desktop/Pf-MCA/dimred_dev.rds")
+
+saveRDS(clusteringspz, file= "/Users/eliana/Desktop/Pf-MCA/clusteringspz.rds")
+
+saveRDS(dev.counts, file= "/Users/eliana/Desktop/Pf-MCA/dev.counts.rds")
+
+saveRDS(dev, file= "/Users/eliana/Desktop/Pf-MCA/dev.rds")
+
+
+#Finding differentially expressed features 
+
+# find all markers of cluster 0
+cluster0.markers <- FindMarkers(dev, ident.1 = 0, only.pos= TRUE, test.use = "MAST", min.pct = 0.10)
+head(cluster0.markers, n = 5)
+write.csv(cluster0.markers, file = "/Users/eliana/Desktop/Pf-MCA/cluster0.markers.csv", row.names = TRUE)
+
+# find all markers of cluster 1
+cluster1.markers <- FindMarkers(dev, ident.1 = 1, only.pos= TRUE, test.use = "MAST", min.pct = 0.10)
+head(cluster1.markers, n = 5)
+write.csv(cluster1.markers, file = "/Users/eliana/Desktop/Pf-MCA/cluster1.markers.csv", row.names = TRUE)
+
+# find all markers of cluster 2
+cluster2.markers <- FindMarkers(dev, ident.1 = 2, only.pos= TRUE, test.use = "MAST",  min.pct = 0.10)
+head(cluster2.markers, n = 5)
+write.csv(cluster2.markers, file = "/Users/eliana/Desktop/Pf-MCA/cluster2.markers.csv", row.names = TRUE)
+
+# find all markers of cluster 3
+cluster3.markers <- FindMarkers(dev, ident.1 = 3, only.pos= TRUE, test.use = "MAST", min.pct = 0.10)
+head(cluster3.markers, n = 5)
+write.csv(cluster3.markers, file = "/Users/eliana/Desktop/Pf-MCA/cluster3.markers.csv", row.names = TRUE)
+
+# find all markers of cluster 4
+cluster4.markers <- FindMarkers(dev, ident.1 = 4, only.pos= TRUE, test.use = "MAST", min.pct = 0.10,)
+head(cluster4.markers, n = 5)
+write.csv(cluster4.markers, file = "/Users/eliana/Desktop/Pf-MCA/cluster4markers.csv", row.names = TRUE)
+
+
+# find genes that separates cluster 0 & cluster 1 by specifying both ident.1 and ident.2 
+cluster01.markers2 <- FindMarkers(dev, ident.1 = 0, ident.2 = 1, test.use = "MAST", min.pct = 0.10, logfc.threshold = 0.58)
+print(x = head(x = cluster01.markers2, n = 10))
+write.csv(cluster01.markers2,"/Users/eliana/Desktop/Pf-MCA/cluster01.markers_dev_min.pct0.1.csv", row.names = TRUE)
+
+
+# find genes that separates cluster 0 & cluster 1 by specifying both ident.1 and ident.2 
+cluster10.markers2 <- FindMarkers(dev, ident.1 = 1, ident.2 = 0, test.use = "MAST", min.pct = 0.10, logfc.threshold = 0.58)
+print(x = head(x = cluster01.markers2, n = 10))
+write.csv(cluster10.markers2,"/Users/eliana/Desktop/Pf-MCA/cluster10.markers_dev_min.pct0.1_logfc1.8.csv", row.names = TRUE)
+
+
+# find genes that separates cluster 1 & cluster 2 by specifying both ident.1 and ident.2 
+cluster12.markers2 <- FindMarkers(dev, ident.1 = 1, ident.2 = 2,  test.use = "MAST", min.pct = 0.10, logfc.threshold = 0.58)
+print(x = head(x = cluster12.markers2, n = 10))
+write.csv(cluster12.markers2,"/Users/eliana/Desktop/Pf-MCA/cluster12.markers_dev_min.pct0.1_logFC1.8.csv", row.names = TRUE)
+
+
+# find genes that separates cluster 0 & cluster 2 by specifying both ident.1 and ident.2 
+cluster02.markers2 <- FindMarkers(dev, ident.1 = 0, ident.2 = 2,  test.use = "MAST", min.pct = 0.10,logfc.threshold = 0.58)
+print(x = head(x = cluster02.markers2, n = 10))
+write.csv(cluster02.markers2,"/Users/eliana/Desktop/Pf-MCA/cluster02.markers_dev.csv_min.pct0.1.csv", row.names = TRUE)
+
+
+# find genes that separates cluster 0 & cluster 4 by specifying both ident.1 and ident.2 
+cluster04.markers2 <- FindMarkers(dev, ident.1 = 0, ident.2 = 2,  test.use = "MAST", min.pct = 0.10,logfc.threshold = 0.58)
+print(x = head(x = cluster04.markers2, n = 10))
+write.csv(cluster04.markers2,"/Users/eliana/Desktop/Pf-MCA/cluster04.markers_dev.csv_min.pct0.1.csv", row.names = TRUE)
+
+
+#  create a Seurat object of just the spz cells 
+subset_spz <- subset(dev, idents = c("0", "1", "2"))
+
+DimPlot(subset_spz, label = TRUE, reduction = "umap", pt.size = 1, split.by = "day", cols = myClustercolors, shape.by = "stage") +NoAxes()+ NoLegend()
+
+```
+
+```{r}
+#Pseudotime 
+#Convert Seurat to SCE
+subset_spz.sce <- as.SingleCellExperiment(subset_spz)
+
+#Slingshot_ spz pseudotime
+sling.seurat_spz <- slingshot(gcdataspz.sce , clusterLabels = "seurat_clusters", reducedDim = reducedDim(gcdataspz.sce, 'UMAP'), allow.breaks = FALSE, shrink = TRUE, reweight = TRUE, start.clus = "2", end.clus = "0", extend = "y")
+
+pseudotime_values <- sling.seurat_spz@colData$slingPseudotime_1
+write.csv(pseudotime_values, file="/Users/eliana/Desktop/Pf-MCA/pseudotime_values_spz.csv")
+
+ 
+## get lineages inferred by Slingshot
+lnes_spz <- getLineages(reducedDim(sling.seurat_spz, "UMAP"),
+                 sling.seurat_spz$seurat_clusters, start.clus = "2",  end.clus = "0")
+lnes_spz@lineages
+
+
+# Plot PC1 vs PC2 colored by Slingshot pseudotime.
+colors <- colorRampPalette(rev(brewer.pal(11,'Spectral'))[-6])(100) 
+plot(reducedDims(sling.seurat_spz)$UMAP, col = colors[cut(sling.seurat_spz$slingPseudotime_1,breaks=100)], pch=16, asp = 1)
+lines(SlingshotDataSet(sling.seurat_spz), lwd = 2, col = 'black')
+
+# Plot Slingshot pseudotime vs day 
+order <- c("ooSpz", "hlSpz", "sgSpz", "bbSpz" )
+# Relevel object@ident
+subset_spz.sce@colData$stage <- factor(x = subset_spz.sce@colData$stage , levels = order)
+
+
+ggplot(as.data.frame(colData(subset_spz.sce)), aes(x = subset_spz.sce$slingPseudotime_1, y = day, 
+                              colour = stage)) +
+    geom_quasirandom(groupOnX = FALSE) +
+    scale_color_manual(values= mySpzcolors) + theme_classic() +theme(text = element_text(size=20))+
+    xlab("Pseudotime") + ylab("Timepoint") 
+
+
+# Plot Slingshot pseudotime vs cluster and stage
+
+mySpzcolors <- c(ooSpz = "seagreen3", hlSpz = "turquoise4", sgSpz = "#00CCFF", bbSpz = "#6633FF")
+
+myClustercolors <- c ("0"= "#DD8D29", "1"= "#00A08A", "2"= "#046C9A")
+
+#stage
+plot(reducedDims(sling.seurat_spz)$UMAP, col = mySpzcolors[sling.seurat_spz$stage], pch=16, cex=0.75, asp = 1)
+lines(SlingshotDataSet(sling.seurat_spz), lwd = 3, col = 'black')
+legend('topleft', col = mySpzcolors, legend=c("ooSpz","hlSpz","sgSpz", "injSpz"), pch=16)+ theme(text = element_text(size=20))
+
+#clusters
+plot(reducedDims(subset_spz.sce)$UMAP, col = myClustercolors[subset_spz.sce$seurat_clusters], pch=16, cex = 0.7, asp=1)
+legend('bottomright', col = myClustercolors, legend=c("C0","C1","C2"), pch=16)+ theme(text = element_text(size=20))
+
+```
+
+```{r}
+
+#Differential gene expression with pseudotime using Monocle's differentialGeneTest
+
+#CellDataSet object
+devspz3_monocle <- subset_spz.sce
+expmatrix3 <- as.matrix(assays(devspz3_monocle)[["log_cpm"]])
+gene_meta3 <- as.data.frame(rowData(devspz3_monocle))
+gene_meta3$gene_short_name  <- rownames(gene_meta3)
+fd3 <- new("AnnotatedDataFrame", data = gene_meta3)
+pheno3 <- as.data.frame(colData(devspz3_monocle))
+rownames(pheno3) <- pheno3$xfilename
+pd3 <- new("AnnotatedDataFrame", data = pheno3)
+
+dCellData3 <- newCellDataSet(expmatrix3,  phenoData = pd3, featureData = fd3, expressionFamily = gaussianff())
+dCellData3 <- detectGenes(dCellData3, min_expr = 0.1)
+fData(dCellData3)$expressed_genes <- fData(dCellData3)$num_cells_expressed >= 1
+table(fData(dCellData3)$expressed_genes)
+dCellData3 <- dCellData3[fData(dCellData3)$expressed_genes,]
+
+#add Slingshot pseudotime
+dCellData3$slingPseudotime_1 <- subset_spz$slingPseudotime_1
+
+#gene-pseudotime association
+res <- differentialGeneTest(dCellData3, fullModelFormulaStr = "~slingPseudotime_1")
+sub <- res[res$qval < 0.0001, ]
+sub <- sub[order(sub$qval, na.last=FALSE) , ]
+dim(sub)
+write.csv(sub, file="/Users/eliana/Desktop/Pf-MCA/pseudotime_genes.csv")
+
+```
+
+
+```{r}
+#Fig3d
+
+pseudotime_genes <- read.csv(file.choose(), header = TRUE) 
+pseudotime_list <- as.character(pseudotime_genes$GeneID)
+
+
+#Heatmap pseudotime ordering 
+obj <- subset_spz.sce[pseudotime_list, ]
+
+#set the order of stages
+ord <- obj[, order(obj$slingPseudotime_1)]
+ordexp <- logcounts(ord)
+celldata <- colData(ord)
+
+row.names(stage) <- colnames(ordexp)
+colnames(stage) <- "stage"
+pseudotime <- as.data.frame(celldata$slingPseudotime_1)
+row.names(pseudotime) <- colnames(ordexp)
+colnames(pseudotime) <- "Pseudotime"
+cluster <- as.data.frame(celldata$RNA_snn_res.0.6)
+row.names(cluster) <- colnames(ordexp)
+colnames(cluster) <- "Cluster"
+
+# manually create color range
+myColors = colorRampPalette(c("lightyellow", "orange1", "orange2", "orangered3", "orangered4"))(8)
+myColors
+
+
+pheatmap(ordexp, cluster_cols=FALSE,cluster_rows=TRUE ,  
+         annotation_col=cluster, show_colnames = FALSE, show_rownames = FALSE, color=myColors, clustering_distance_rows= distance)
+
+
+t <- pheatmap(ordexp, cluster_cols=FALSE,cluster_rows=TRUE ,  
+         annotation_col=cluster, show_colnames = FALSE, show_rownames = FALSE, color=myColors, silent = TRUE, clustering_distance_rows= "correlation")
+
+t$tree_row %>% as.dendrogram() %>% plot(horiz = TRUE)
+
+
+t <- as.data.frame(cutree(t$tree_row, k = 6))
+colnames(t) <- "Cluster"
+
+
+map <- pheatmap(ordexp, cluster_cols=FALSE,cluster_rows=TRUE ,  
+         annotation_row=t, show_colnames = FALSE, show_rownames = FALSE, color=myColors, cutree_rows = 6, clustering_distance_rows= "correlation",  annotation_names_row = TRUE, fontsize_row= 5)
+
+map.clust <- cbind(ordexp, 
+                      cluster = cutree(map$tree_row, 
+                                       k = 6))
+
+
+map.clust <- as.data.frame(map.clust)
+head(map.clust)
+map.clust <- as.data.frame(map.clust)
+map.clust$Gene <- rownames(map.clust)
+
+
+
+clustmean <- aggregate(map.clust[, 1:763], by= list(as.factor(map.clust$cluster)), mean)
+subclustmean <- clustmean[, 2:764]
+rownames(subclustmean) <- clustmean$Group.1
+
+
+#heatmap with pseudotime and clusters
+
+annotation_col <- data.frame(Pseudotime= pseudotime, Cluster=cluster)
+
+ann_colors = list(Cluster =c ("0"= "#DD8D29", "1"= "#00A08A", "2"= "#046C9A"),
+    Pseudotime= colorRampPalette(brewer.pal(11,"Spectral"))(255))
+
+pheatmap(subclustmean, cluster_cols=FALSE, cluster_rows=TRUE ,  annotation_col = annotation_col, show_colnames = FALSE, show_rownames = TRUE, color=myColors,legend = TRUE, annotation_colors = ann_colors, annotation_legend = TRUE, fontsize = 12, clustering_distance_rows= "correlation" )
+
+#Save list of cluster assignments
+clust_assign_notnorm <- map.clust %>% select(cluster, Gene)
+write.csv(clust_assign_notnorm ,"/Users/eliana/Desktop/Pf-MCA/gene_6clusters_pseudotime.csv", row.names = F)
+
+```
+
+```{r}
+
+#Fig.3h
+#HVGs spz stages
+
+#HVGs sgSpz (days17+18)
+Idents(sg_subset) <- "day"
+sg_subsetday <- subset(sg_subset, idents= c("day17", "day18"))
+
+counts8 <- sg_subsetday@assays$RNA@data
+norm8 <- M3DropConvertData(counts8, is.log = TRUE)
+
+M3Drop_genes8 <- M3DropFeatureSelection(
+    norm8,
+    mt_method = "fdr",
+    mt_threshold = 0.05)
+write.csv(M3Drop_genes8, file="/Users/eliana/Desktop/Pf-MCA/M3dropfeatures_sgspz_day17_18.csv")
+
+#HVGs injSpz (days17+18)
+inj_subset <- subset(subset_spz, subset= stage == c("bbSpz"))
+
+counts5 <- inj_subset@assays$RNA@data
+norm5 <- M3DropConvertData(counts5, is.log = TRUE)
+
+M3Drop_genes5 <- M3DropFeatureSelection(
+    norm5,
+    mt_method = "fdr",
+    mt_threshold = 0.05)
+write.csv(M3Drop_genes5, file="/Users/eliana/Desktop/Pf-MCA/M3dropfeatures_injspz.csv")
+
+#HVGs hlSpz
+hl_subset <- subset(subset_spz, subset= stage == c("hlSpz"))
+
+counts6 <- hl_subset@assays$RNA@data
+norm6 <- M3DropConvertData(counts6, is.log = TRUE)
+
+M3Drop_genes6 <- M3DropFeatureSelection(
+    norm6,
+    mt_method = "fdr",
+    mt_threshold = 0.05)
+write.csv(M3Drop_genes6, file="/Users/eliana/Desktop/Pf-MCA/M3dropfeatures_hlspz.csv")
+
+#HVGs ooSpz
+oo_subset <- subset(subset_spz, subset= stage == c("ooSpz"))
+
+counts7 <- oo_subset@assays$RNA@data
+norm7 <- M3DropConvertData(counts7, is.log = TRUE)
+
+M3Drop_genes7 <- M3DropFeatureSelection(
+    norm7,
+    mt_method = "fdr",
+    mt_threshold = 0.05)
+write.csv(M3Drop_genes7, file="/Users/eliana/Desktop/Pf-MCA/M3dropfeatures_oospz.csv")
+
+#plot HVGs colored by stage
+
+geneList = read.csv(file.choose(), header = TRUE)
+spz <- subset_spz[geneList$GeneID]
+gene_exp <- FetchData(spz, c(geneList$GeneID, vars = c("stage")))
+gene_exp_m <- melt(gene_exp, id.vars=c("stage"))
+gene_exp_m$stage <- mapvalues(gene_exp_m$stage, from=c("ooSpz", "hlSpz", "bbSpz", "sgSpz"), to=c("oo", "hl", "inj", "sg"))
+gene_exp_m$stage = factor(gene_exp_m$stage, levels=c("oo","hl","sg","inj"))
+colors = c(oo = "seagreen3", hl = "turquoise4", sg = "#00CCFF", inj = "#6633FF", noColor="gray")
+gene_exp_m$colourMap<- apply(gene_exp_m, MARGIN = 1, function(x) {
+  if (x["stage"] %in% geneList[geneList$GeneID==x["variable"],]$HVG_stage) x["stage"] else "noColor"
+})
+
+gene_exp_m$variable = factor(gene_exp_m$variable, levels=c("PF3D7-0518900.1", "PF3D7-0616500.1","PF3D7-1023100.1", "PF3D7-1442600.1", "PF3D7-1351600.1", "PF3D7-0404900.1", "PF3D7-0408600.1", "PF3D7-1218000.1", "PF3D7-1129100.1", "PF3D7-1332200.1", "PF3D7-1211000.1", "PF3D7-0107300.1", "PF3D7-1409900.1", "PF3D7-1359600.1", "PF3D7-1234100.1"))
+
+ggplot(gene_exp_m, aes(x = variable, y = value)) + geom_violin() + geom_jitter(aes(x = variable, y = value, colour=colourMap), size=0.4, alpha=0.8) + stat_summary(fun=mean, geom="point", size=2, color="black") +  theme_classic() + theme(axis.text.x = element_text(angle = 45, hjust=1, vjust=0.99), plot.margin = margin(0, 0, 0, 1.5, "cm"), axis.title.x=element_blank()) + labs(y= "Gene expression") + labs(color='Stage') + scale_color_manual(breaks=c('oo', 'hl', 'sg', 'inj'), values = colors)+facet_wrap(vars(stage), nrow=4)
+```
+
+```{r}
+#Fig3e,i
+#gene expression over pseudotime with cluster bar
+
+
+make_set_dataframe <- function(sce,gene.set,pt) {
+  
+  ## INPUT:
+  ## sce = single cell experiment (seurat)
+  ## gene.set = data.frame with columns: Gene.Set, Gene.ID
+  ## pt = pseudotime by cell
+  
+  ## return df with gene set as row, cells as cols, values are averaged expression for that module/cell
+  set_expression <- ddply(.data = gene.set, 
+                          .variables = "Gene.Set", 
+                          .fun = function(x) colSums(matrix(exp(as.matrix(GetAssayData(sce)[x$Gene.ID,]))-1,ncol = ncol(sce))))
+  
+  ## move Gene.Set to rownames and delete column
+  rownames(set_expression) <- set_expression$Gene.Set
+  set_expression$Gene.Set = NULL
+  
+  ## add pseudotime and order 
+  set_expression <- data.frame(pt=pt, t(set_expression))
+  set_expression <-set_expression[order(set_expression$pt), ]
+  
+  
+  ## correct for gene to gene variances by dividing values by mean expression of each gene
+  set_expression=data.frame(pt=set_expression$pt,
+  t(t(set_expression[,2:ncol(set_expression)])/apply(set_expression[,2:ncol(set_expression)],2,mean)))
+  
+  return(set_expression)
+}
+
+make_gene_dataframe <- function(sce,gene.list,pt) {
+  
+  ##Same thing but not averaging across the set, keeping individual gene values (for thin lines)
+  
+  gene <- data.frame(matrix(exp(as.matrix(GetAssayData(sce)[gene.list[,4],]))-1,ncol = ncol(sce)))
+  
+  print(gene)
+  
+}
+
+#AP2s DE over pseudotime + CRMP4/MSP1/P41
+spz_AP2 <- read.csv(file.choose(), header = T, sep = ',', stringsAsFactors = F)
+spz_AP2$Gene.ID <- unname(sapply(spz_AP2$GeneID, function(x){gsub("_",'-',x)}))
+
+## make dfs
+spz_expression <- melt(make_set_dataframe(subset_spz, spz_AP2, subset_spz$slingPseudotime_1),
+                       id.vars = 'pt')
+cluster_bar <- FetchData(subset_spz, vars = c('slingPseudotime_1','seurat_clusters'))
+colnames(cluster_bar) <- c('pt','cluster')
+
+#### PLOT
+
+## global font size
+x.text.size <- 16
+y.text.size <- 16
+
+transmission.atlas <- theme_set(
+  
+  ## General aesthetics
+  theme_classic() +
+
+    ## Axes aesthetics
+    theme(axis.text.x = element_text(size = x.text.size)) +
+    theme(axis.text.y = element_text(size=y.text.size)) +
+    theme(axis.title = element_text(size=max(x.text.size,y.text.size),face='bold')) +
+    theme(axis.ticks = element_line(colour="grey30",size=1)) +
+    
+    ## Legend aesthetics
+    theme(legend.background = element_rect(fill=alpha('grey90',0.5))) +
+    theme(legend.title = element_text(size=max(x.text.size,y.text.size)/2, 
+                                      face="bold")) +
+    theme(legend.text = element_text(size=max(x.text.size,y.text.size)/2,
+                                     colour='grey20'))
+)
+
+
+
+spz_plot <- ggplot() +
+  geom_smooth(data=spz_expression, aes(x=pt, y=value, color=variable),
+              span = 0.5, n=100,
+              method = 'loess', se = F, size=1.5, 
+              show.legend = T) +
+  labs(x='Pseudotime', y='Gene Set Expression') +
+  
+  scale_x_continuous(breaks = c(0,5,10)) +
+  scale_color_manual(values=c(park_palette("CraterLake")))
+spz_plot
+
+windownumber=20
+windowsize=max(spz_expression$pt)/(windownumber/2)
+
+
+spz_plot_clustbar <- spz_plot +
+  geom_rect(data=cluster_bar,aes(xmin=pt-windowsize/2,xmax=pt+windowsize/2,ymin=-0.7,ymax=-0.4,fill=cluster),show.legend = T) +
+scale_fill_manual(values=c ('0'= '#DD8D29', '1'= '#00A08A', '2'= '#046C9A'), 
+                    labels = c("0", "1", "2"))
+spz_plot_clustbar
+
+
+#spz pseudotime gene sets
+spz_pt <- read.csv(file.choose(), header = T, sep = ',', stringsAsFactors = F)
+spz_pt$Gene.ID <- unname(sapply(spz_pt$GeneID, function(x){gsub("_",'-',x)}))
+
+## make dfs
+spz_expression <- melt(make_set_dataframe(subset_spz, spz_pt, subset_spz$slingPseudotime_1),
+                       id.vars = 'pt')
+cluster_bar <- FetchData(subset_spz, vars = c('slingPseudotime_1','seurat_clusters'))
+colnames(cluster_bar) <- c('pt','cluster')
+
+spz_plot <- ggplot() +
+  geom_smooth(data=spz_expression, aes(x=pt, y=value, color=variable),
+              span = 0.5, n=100,
+              method = 'loess', se = F, size=1.5, 
+              show.legend = T) +
+  labs(x='Pseudotime', y='Gene Set Expression') +
+  
+  scale_x_continuous(breaks = c(0,5,10)) +
+  scale_color_manual(values=c(park_palette("CraterLake"), wes_palette("Darjeeling1")[1]))
+spz_plot
+
+windownumber=20
+windowsize=max(spz_expression$pt)/(windownumber/2)
+
+
+spz_plot_clustbar <- spz_plot +
+  geom_rect(data=cluster_bar,aes(xmin=pt-windowsize/2,xmax=pt+windowsize/2,ymin=-0.7,ymax=-0.4,fill=cluster),show.legend = F) +
+scale_fill_manual(values=c ('0'= '#DD8D29', '1'= '#00A08A', '2'= '#046C9A'), 
+                    labels = c("0", "1", "2"))
+spz_plot_clustbar
+
+
+```
+
